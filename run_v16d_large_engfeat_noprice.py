@@ -1,5 +1,7 @@
 """V16d-large + V12 eng features WITHOUT price-related columns."""
 import logging
+import os
+
 import numpy as np
 import pandas as pd
 
@@ -26,7 +28,8 @@ logger = logging.getLogger(__name__)
 OUT_DIR = OUTPUT_DIR / "v16d_large_engfeat_noprice"
 OUT_DIR.mkdir(exist_ok=True)
 
-EPOCHS = 100
+# 默认 500；可在服务器上覆盖：V16D_EPOCHS=100 python run_v16d_large_engfeat_noprice.py
+EPOCHS = int(os.environ.get("V16D_EPOCHS", "500"))
 
 # ── Load & filter V12 engineered features ──
 feat_da = pd.read_csv(OUTPUT_DIR / "feature_da.csv", parse_dates=["ts"], index_col="ts")
