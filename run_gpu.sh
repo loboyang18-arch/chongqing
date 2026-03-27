@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# V16d-large + 工程特征（去价格列）训练，使用 CUDA（若可用）
-# 可选：export V16D_EPOCHS=100 覆盖默认 500
+# V16d + 工程特征（去价格列）训练，使用 CUDA（若可用）
+# 可选覆盖:
+#   V16D_EPOCHS=500 V16D_BS=64 V16D_D_MODEL=192 V16D_DIM_FF=576
+#   V16D_N_LAYERS=4 V16D_N_HEAD=8 V16D_DROPOUT=0.2
+#   V16D_OUT_DIR=v16d_probe_xl
 set -euo pipefail
 cd "$(dirname "$0")"
 

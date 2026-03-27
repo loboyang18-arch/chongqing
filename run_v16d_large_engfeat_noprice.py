@@ -25,11 +25,21 @@ from src.shape_metrics import compute_shape_report
 
 logger = logging.getLogger(__name__)
 
-OUT_DIR = OUTPUT_DIR / "v16d_large_engfeat_noprice"
-OUT_DIR.mkdir(exist_ok=True)
-
-# 默认 500；可在服务器上覆盖：V16D_EPOCHS=100 python run_v16d_large_engfeat_noprice.py
+# 训练与模型规模参数（可用环境变量覆盖）
 EPOCHS = int(os.environ.get("V16D_EPOCHS", "500"))
+BS = int(os.environ.get("V16D_BS", "64"))
+D_MODEL = int(os.environ.get("V16D_D_MODEL", "128"))
+N_HEAD = int(os.environ.get("V16D_N_HEAD", "4"))
+N_LAYERS = int(os.environ.get("V16D_N_LAYERS", "3"))
+DIM_FF = int(os.environ.get("V16D_DIM_FF", "384"))
+DROPOUT = float(os.environ.get("V16D_DROPOUT", "0.2"))
+
+default_out = (
+    f"v16d_engfeat_noprice_"
+    f"d{D_MODEL}_ff{DIM_FF}_l{N_LAYERS}_h{N_HEAD}_bs{BS}_ep{EPOCHS}"
+)
+OUT_DIR = OUTPUT_DIR / os.environ.get("V16D_OUT_DIR", default_out)
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── Load & filter V12 engineered features ──
 feat_da = pd.read_csv(OUTPUT_DIR / "feature_da.csv", parse_dates=["ts"], index_col="ts")
@@ -54,7 +64,11 @@ eng_ts_map = {ts: i for i, ts in enumerate(feat_da.index)}
 
 C_POINT_TOTAL = C_POINT + N_ENG
 MODEL_KW = dict(
-    d_model=128, nhead=4, nlayers=3, dim_ff=384, dropout=0.2,
+    d_model=D_MODEL,
+    nhead=N_HEAD,
+    nlayers=N_LAYERS,
+    dim_ff=DIM_FF,
+    dropout=DROPOUT,
     c_point=C_POINT_TOTAL,
 )
 logger.info("c_point: %d (base %d + eng %d)", C_POINT_TOTAL, C_POINT, N_ENG)
@@ -80,14 +94,18 @@ f_std = futr[:, fit_mask].std(axis=1, keepdims=True) + 1e-8
 futr_norm = ((futr - f_mean) / f_std).astype(np.float32)
 
 logger.info("=" * 60)
-logger.info("V16d-LARGE + ENG FEAT NO-PRICE (%d dims)  epochs=%d", N_ENG, EPOCHS)
+logger.info(
+    "V16d + ENG FEAT NO-PRICE (%d dims)  ep=%d bs=%d d=%d ff=%d L=%d H=%d drop=%.2f",
+    N_ENG, EPOCHS, BS, D_MODEL, DIM_FF, N_LAYERS, N_HEAD, DROPOUT
+)
+logger.info("OUT_DIR: %s", OUT_DIR)
 logger.info("=" * 60)
 
 res = train_one(
     seed=0,
     y_norm=y_norm, hist_norm=hist_norm, futr_norm=futr_norm,
     ts=ts, raw_y=raw_y, y_mean=y_mean, y_std=y_std,
-    epochs=EPOCHS, model_kw=MODEL_KW, out_dir=OUT_DIR,
+    epochs=EPOCHS, bs=BS, model_kw=MODEL_KW, out_dir=OUT_DIR,
     eng_feats=eng_norm, eng_ts_map=eng_ts_map,
 )
 
