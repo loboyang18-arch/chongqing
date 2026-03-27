@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# 训练与中间产物（output 内规则见 output/.gitignore）
+*.parquet
+
+# 原始数据体积大，不入库；服务器上用 tar 包或 OSS 同步
+source_data/
+
+# 本地数据打包产物
+chongqing_v16d_data.tar.gz

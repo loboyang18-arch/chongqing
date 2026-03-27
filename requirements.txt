@@ -1,0 +1,19 @@
+# 核心
+pandas>=1.5
+numpy>=1.24
+lightgbm>=4.0
+
+# 可视化 / 实验
+matplotlib>=3.7
+optuna>=3.0
+
+# 部分实验脚本
+xgboost>=2.0
+catboost>=1.2
+statsmodels>=0.14
+
+# 序列模型（model_sequence.py / model_seq_shape.py）
+torch>=2.0
+
+# 可选：pipeline 写出 parquet
+# pyarrow>=14.0

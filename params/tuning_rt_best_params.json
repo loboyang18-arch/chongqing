@@ -1,0 +1,14 @@
+{
+  "learning_rate": 0.09122224696918936,
+  "num_leaves": 122,
+  "max_depth": 4,
+  "min_child_samples": 48,
+  "subsample": 0.957037188340944,
+  "colsample_bytree": 0.8525099572357063,
+  "reg_alpha": 0.5637028170752804,
+  "reg_lambda": 0.3579926796317329,
+  "objective": "huber",
+  "metric": "mae",
+  "verbosity": -1,
+  "seed": 42
+}
