@@ -13,6 +13,8 @@ git branch -M main
 git push -u origin main
 ```
 
+> **说明**：推送需本机已配置 GitHub 凭据（HTTPS Personal Access Token 或 SSH key）。仓库名示例：`chongqing_prj`。
+
 ## 2. 本地：打包数据（不入库）
 
 ```bash
