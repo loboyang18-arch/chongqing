@@ -57,8 +57,20 @@ class Cfg:
 
 
 class Day24Dataset(Dataset):
-    def __init__(self, dfh: pd.DataFrame, day_list, past_hours, target_col, past_cols, futr_cols, y_mean, y_std):
+    def __init__(
+        self,
+        dfh: pd.DataFrame,
+        raw_target: pd.Series,
+        day_list,
+        past_hours,
+        target_col,
+        past_cols,
+        futr_cols,
+        y_mean,
+        y_std,
+    ):
         self.dfh = dfh
+        self.raw_target = raw_target
         self.day_list = day_list
         self.past_hours = past_hours
         self.target_col = target_col
@@ -78,7 +90,8 @@ class Day24Dataset(Dataset):
             dayf = dfh.loc[t0:t1]
             if len(past) != past_hours or len(dayf) != 24:
                 continue
-            if not np.isfinite(dayf[target_col].values).all():
+            raw_day = self.raw_target.loc[t0:t1]
+            if len(raw_day) != 24 or (not np.isfinite(raw_day.values).all()):
                 continue
             self.starts.append(t0)
 
@@ -89,7 +102,7 @@ class Day24Dataset(Dataset):
         t0 = self.starts[i]
         past = self.dfh.loc[t0 - pd.Timedelta(hours=self.past_hours) : t0 - pd.Timedelta(hours=1), self.past_cols].values
         futr = self.dfh.loc[t0 : t0 + pd.Timedelta(hours=23), self.futr_cols].values
-        y = self.dfh.loc[t0 : t0 + pd.Timedelta(hours=23), self.target_col].values
+        y = self.raw_target.loc[t0 : t0 + pd.Timedelta(hours=23)].values
         y = (y - self.y_mean) / self.y_std
         return (
             torch.tensor(past, dtype=torch.float32),
@@ -202,7 +215,9 @@ def main():
     y_mean = float(dfh.loc[fit_mask, target_col].mean())
     y_std = float(dfh.loc[fit_mask, target_col].std()) + 1e-8
 
-    # Per-channel normalization
+    raw_target = dfh[target_col].copy()
+
+    # Per-channel normalization (features only; labels keep raw_target then normalize once in Dataset)
     pm = dfh.loc[fit_mask, past_cols].mean()
     ps = dfh.loc[fit_mask, past_cols].std().replace(0, np.nan).fillna(1.0)
     fm = dfh.loc[fit_mask, futr_cols].mean()
@@ -217,8 +232,12 @@ def main():
     test_days = [d for d in all_days if test_start <= d <= test_end]
     past_hours = cfg.past_days * 24
 
-    train_ds = Day24Dataset(dfh, train_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std)
-    test_ds = Day24Dataset(dfh, test_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std)
+    train_ds = Day24Dataset(
+        dfh, raw_target, train_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std
+    )
+    test_ds = Day24Dataset(
+        dfh, raw_target, test_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std
+    )
 
     logger.info("Day samples: train=%d test=%d past_hours=%d", len(train_ds), len(test_ds), past_hours)
     logger.info("Input dims: c_past=%d c_futr=%d", len(past_cols), len(futr_cols))
