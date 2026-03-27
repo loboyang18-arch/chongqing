@@ -53,6 +53,10 @@ class Cfg:
     dim_ff: int = int(os.environ.get("V17_DIM_FF", "384"))
     dropout: float = float(os.environ.get("V17_DROPOUT", "0.2"))
     past_days: int = int(os.environ.get("V17_PAST_DAYS", "14"))
+    # 训练样本起点步长（小时）：1=每天24个起点，3=每天8个起点，24=每天1个起点
+    train_anchor_stride_h: int = int(os.environ.get("V17_TRAIN_ANCHOR_STRIDE_H", "1"))
+    # 评估起点步长（小时）：默认24，仅评估每天00:00的24点预测
+    eval_anchor_stride_h: int = int(os.environ.get("V17_EVAL_ANCHOR_STRIDE_H", "24"))
     out_dir_name: str = os.environ.get("V17_OUT_DIR", "")
 
 
@@ -68,6 +72,7 @@ class Day24Dataset(Dataset):
         futr_cols,
         y_mean,
         y_std,
+        anchor_stride_h=24,
     ):
         self.dfh = dfh
         self.raw_target = raw_target
@@ -78,22 +83,25 @@ class Day24Dataset(Dataset):
         self.futr_cols = futr_cols
         self.y_mean = y_mean
         self.y_std = y_std
+        self.anchor_stride_h = max(1, int(anchor_stride_h))
         self.starts = []
 
         for d in day_list:
-            t0 = pd.Timestamp(d)
-            p0 = t0 - pd.Timedelta(hours=past_hours)
-            t1 = t0 + pd.Timedelta(hours=23)
-            if p0 not in dfh.index or t1 not in dfh.index:
-                continue
-            past = dfh.loc[p0 : t0 - pd.Timedelta(hours=1)]
-            dayf = dfh.loc[t0:t1]
-            if len(past) != past_hours or len(dayf) != 24:
-                continue
-            raw_day = self.raw_target.loc[t0:t1]
-            if len(raw_day) != 24 or (not np.isfinite(raw_day.values).all()):
-                continue
-            self.starts.append(t0)
+            day0 = pd.Timestamp(d)
+            for hh in range(0, 24, self.anchor_stride_h):
+                t0 = day0 + pd.Timedelta(hours=hh)
+                p0 = t0 - pd.Timedelta(hours=past_hours)
+                t1 = t0 + pd.Timedelta(hours=23)
+                if p0 not in dfh.index or t1 not in dfh.index:
+                    continue
+                past = dfh.loc[p0 : t0 - pd.Timedelta(hours=1)]
+                dayf = dfh.loc[t0:t1]
+                if len(past) != past_hours or len(dayf) != 24:
+                    continue
+                raw_day = self.raw_target.loc[t0:t1]
+                if len(raw_day) != 24 or (not np.isfinite(raw_day.values).all()):
+                    continue
+                self.starts.append(t0)
 
     def __len__(self):
         return len(self.starts)
@@ -185,7 +193,7 @@ def main():
     cfg = Cfg()
     out_name = cfg.out_dir_name or (
         f"v17_day24_d{cfg.d_model}_ff{cfg.dim_ff}_l{cfg.nlayers}_h{cfg.nhead}_"
-        f"bs{cfg.bs}_ep{cfg.epochs}_pd{cfg.past_days}"
+        f"bs{cfg.bs}_ep{cfg.epochs}_pd{cfg.past_days}_tas{cfg.train_anchor_stride_h}"
     )
     out_dir = OUTPUT_DIR / out_name
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -233,17 +241,32 @@ def main():
     past_hours = cfg.past_days * 24
 
     train_ds = Day24Dataset(
-        dfh, raw_target, train_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std
+        dfh, raw_target, train_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        anchor_stride_h=cfg.train_anchor_stride_h,
     )
+    # 训练监控集：测试期也按训练起点密度看趋势
     test_ds = Day24Dataset(
-        dfh, raw_target, test_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std
+        dfh, raw_target, test_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        anchor_stride_h=cfg.train_anchor_stride_h,
+    )
+    # 最终评估与出图：默认每天00:00起点（可对齐原有日报告）
+    train_eval_ds = Day24Dataset(
+        dfh, raw_target, train_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        anchor_stride_h=cfg.eval_anchor_stride_h,
+    )
+    test_eval_ds = Day24Dataset(
+        dfh, raw_target, test_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        anchor_stride_h=cfg.eval_anchor_stride_h,
     )
 
-    logger.info("Day samples: train=%d test=%d past_hours=%d", len(train_ds), len(test_ds), past_hours)
+    logger.info(
+        "Samples: train=%d test(mon)=%d train(eval)=%d test(eval)=%d past_hours=%d",
+        len(train_ds), len(test_ds), len(train_eval_ds), len(test_eval_ds), past_hours
+    )
     logger.info("Input dims: c_past=%d c_futr=%d", len(past_cols), len(futr_cols))
 
     dl_kw = {"pin_memory": DEVICE.type == "cuda", "num_workers": 0}
-    train_loader = DataLoader(train_ds, batch_size=cfg.bs, shuffle=True, drop_last=True, **dl_kw)
+    train_loader = DataLoader(train_ds, batch_size=cfg.bs, shuffle=True, drop_last=False, **dl_kw)
     model = Day24Transformer(
         c_past=len(past_cols),
         c_futr=len(futr_cols),
@@ -276,8 +299,8 @@ def main():
             losses.append(float(loss.item()))
         sch.step()
 
-        p24_tr, a24_tr, dates_tr = _to_day_arrays(model, train_ds, y_mean, y_std)
-        p24_te, a24_te, dates_te = _to_day_arrays(model, test_ds, y_mean, y_std)
+        p24_tr, a24_tr, dates_tr = _to_day_arrays(model, train_eval_ds, y_mean, y_std)
+        p24_te, a24_te, dates_te = _to_day_arrays(model, test_eval_ds, y_mean, y_std)
         mtr = _daily_metrics(p24_tr, a24_tr, dates_tr)
         mte = _daily_metrics(p24_te, a24_te, dates_te)
         logger.info(
@@ -294,8 +317,8 @@ def main():
     logger.info("Saved: %s", out_dir / "seed0.pt")
 
     # Final outputs/plots
-    p24_tr, a24_tr, dates_tr = _to_day_arrays(model, train_ds, y_mean, y_std)
-    p24_te, a24_te, dates_te = _to_day_arrays(model, test_ds, y_mean, y_std)
+    p24_tr, a24_tr, dates_tr = _to_day_arrays(model, train_eval_ds, y_mean, y_std)
+    p24_te, a24_te, dates_te = _to_day_arrays(model, test_eval_ds, y_mean, y_std)
     plot_train_week(p24_tr, a24_tr, dates_tr, out_dir)
     plot_hourly_typical(p24_te, a24_te, dates_te, out_dir)
     res = plot_24step(p24_te, a24_te, dates_te, out_dir)
