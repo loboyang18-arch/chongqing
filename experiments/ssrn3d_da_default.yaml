@@ -1,0 +1,29 @@
+experiment_id: "ssrn3d_da_5p0"
+description: "[已终止] SSRN3D 实验失败，见 docs/SSRN3D_实验记录.md；勿再运行"
+disabled: true
+target: "da_clearing"
+dataset_version: "v1.0"
+splits: "default"
+
+runner:
+  command: ["python", "run_ssrn3d.py"]
+  cwd: "."
+  artifact_env:
+    SSRN3D_OUT_DIR: "experiments/{{experiment_id}}"
+    SSRN3D_DUAL: "1"
+    V18_CTX_BEFORE: "5"
+    V18_CTX_AFTER: "0"
+    V18_DELTA_LAMBDA: "0.2"
+    V18_DROPOUT: "0.2"
+
+post_evaluate:
+  enabled: true
+  predictions_csv: "da_result.csv"
+  actual_col: "actual"
+  pred_col: "predicted"
+  task_type: "da"
+  baseline_csv: null
+  baseline_task: "da"
+  baseline_variant: "lag48h"
+  with_scenario_tags: true
+  segment_cols: []
