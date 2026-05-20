@@ -16,9 +16,11 @@ from .config import (
     FORMAT_A_DUAL,
     FORMAT_A_SETTLEMENT,
     FORMAT_A_SINGLE,
+    FORMAT_A_WEATHER,
     FORMAT_B,
     FORMAT_C,
     OUTPUT_DIR,
+    SOURCE_DIR,
     SYSTEM_NODAL_PRICE_FILTER,
 )
 from .dwd_transform import (
@@ -73,6 +75,13 @@ def run(skip_nodal: bool = False):
     single_dfs = []
     for fname, meta in FORMAT_A_SINGLE.items():
         single_dfs.append(load_format_a_single(fname, meta))
+
+    # Format A — Open-Meteo 天气（可选：先运行 scripts/export_sql_weather_to_source_data.py）
+    for fname, meta in FORMAT_A_WEATHER.items():
+        if (SOURCE_DIR / fname).is_file():
+            single_dfs.append(load_format_a_single(fname, meta))
+        else:
+            logger.info("ODS skip (optional): %s not in source_data/", fname)
 
     # Format A — 双值长表
     dual_dfs = []

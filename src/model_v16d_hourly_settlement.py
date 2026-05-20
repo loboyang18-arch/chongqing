@@ -1,11 +1,12 @@
 """
-V16d — 日前小时结算价预测（settlement_da_price）
+V16d — 日前结算价预测（settlement_da_price）
 
 实验设定：
-  - 目标为官方小时 settlement_da_price（整点样本，24点/日）。
-  - 保留历史 settlement_da_price 作为可用历史特征（Lag2 轴）。
-  - 使用 V16c 的双轴对齐滑窗（无 forward-fill），固定训练 50 epoch。
-  - 每轮打印 train/test 的 MAE 与 profile_corr，结束后输出测试集曲线与 CSV。
+  - 预测目标为 settlement_da_price（日前统一结算点电价），D+1 公布。
+  - 序列通道 0 使用 da_clearing_price（D-1 17:30 可用，lag1 安全），
+    避免 settlement_da_price 在 lag1 轴的信息泄漏。
+  - 历史通道见 HIST_COLS（Lag2 为历史日出清等，不再含 settlement 列）。
+  - 使用 V16c 的双轴对齐滑窗（无 forward-fill）。
 """
 
 import logging
@@ -28,14 +29,15 @@ import matplotlib.font_manager as fm
 from .config import OUTPUT_DIR
 from .model_v16_nhits import (
     build_feature_matrix,
-    EFFECTIVE_START, EFFECTIVE_END, VAL_END, TEST_START,
+    EFFECTIVE_START, EFFECTIVE_END, TRAIN_END, TEST_END, TEST_START,
     HIST_COLS, FUTR_COLS, N_LAG1, N_HIST, N_FUTR, SPD,
 )
-from .shape_metrics import compute_shape_report
+from price_forecast_eval import quick_shape_report as compute_shape_report
 
 logger = logging.getLogger(__name__)
 
-TARGET_SETTLE = "settlement_da_price"
+TARGET_DA_CLEARING = "settlement_da_price"
+SEQ_TARGET_COL = "da_clearing_price"
 V16D_DIR = OUTPUT_DIR / "v16d_hourly_settlement"
 
 V16D_DIR.mkdir(exist_ok=True)
@@ -107,12 +109,18 @@ def _log_device_info():
 OUTLIER_FLOOR = 200.0  # 低于此价格的样本视为向下炸点
 
 class HourlySettlementDataset(Dataset):
-    """对齐双轴序列 + 整点 settlement 标签。"""
+    """对齐双轴序列 + 整点结算价标签。
+
+    seq_y: 序列通道 0 使用的价格历史（da_clearing_price，lag1 安全）。
+    y:     预测标签（settlement_da_price）。
+    两者分离以避免 settlement 在 lag1 轴的信息泄漏。
+    """
 
     def __init__(self, y_norm, hist_norm, futr_norm, ts,
                  period_start, period_end, raw_y=None, filter_outliers=False,
-                 eng_feats=None, eng_ts_map=None):
+                 eng_feats=None, eng_ts_map=None, seq_y_norm=None):
         self.y = y_norm
+        self.seq_y = seq_y_norm if seq_y_norm is not None else y_norm
         self.hist = hist_norm
         self.futr = futr_norm
         self.ts = ts
@@ -151,7 +159,7 @@ class HourlySettlementDataset(Dataset):
         for i in range(LOOKBACK):
             i_lag1 = t - LAG1_START_OFF + i
             i_lag2 = t - LAG2_START_OFF + i
-            seq[0, i] = self.y[i_lag1]
+            seq[0, i] = self.seq_y[i_lag1]
             seq[1 : 1 + N_LAG1, i] = self.hist[:N_LAG1, i_lag1]
             seq[1 + N_LAG1 : 1 + N_HIST, i] = self.hist[N_LAG1:N_HIST, i_lag2]
             seq[1 + N_HIST :, i] = self.futr[:, i_lag1]
@@ -256,27 +264,13 @@ def _day_profile_metrics(model, loader, device, y_mean, y_std, raw_y, indices, t
             all_p.append(pred.cpu().numpy())
     preds = np.concatenate(all_p) * y_std + y_mean
 
-    days = {}
-    for i, t in enumerate(indices):
-        d = pd.Timestamp(ts[t]).date()
-        s = pd.Timestamp(ts[t]).hour
-        if d not in days:
-            days[d] = {"p": np.full(24, np.nan), "a": np.full(24, np.nan)}
-        days[d]["p"][s] = preds[i]
-        days[d]["a"][s] = raw_y[t]
-
-    maes, corrs = [], []
-    for d in sorted(days):
-        p, a = days[d]["p"], days[d]["a"]
-        if np.isnan(p).any() or np.isnan(a).any():
-            continue
-        maes.append(np.mean(np.abs(p - a)))
-        if np.std(a) > 1e-6 and np.std(p) > 1e-6:
-            c = np.corrcoef(a, p)[0, 1]
-            if np.isfinite(c):
-                corrs.append(c)
-    mae = np.mean(maes) if maes else 999.0
-    pcorr = np.mean(corrs) if corrs else 0.0
+    actual = raw_y[np.asarray(indices, dtype=np.int64)]
+    mae = float(np.mean(np.abs(preds - actual))) if len(actual) else 999.0
+    if len(actual) and np.std(actual) > 1e-6 and np.std(preds) > 1e-6:
+        c = np.corrcoef(actual, preds)[0, 1]
+        pcorr = float(c) if np.isfinite(c) else 0.0
+    else:
+        pcorr = 0.0
     return mae, pcorr
 
 
@@ -296,19 +290,20 @@ def train_one(
     out_dir=None,
     eng_feats=None,
     eng_ts_map=None,
+    seq_y_norm=None,
 ):
     epochs = MAX_EPOCHS if epochs is None else epochs
     if out_dir is None:
         out_dir = V16D_DIR
     _seed(seed)
 
-    ds_kw = dict(eng_feats=eng_feats, eng_ts_map=eng_ts_map)
+    ds_kw = dict(eng_feats=eng_feats, eng_ts_map=eng_ts_map, seq_y_norm=seq_y_norm)
     train_ds = HourlySettlementDataset(
-        y_norm, hist_norm, futr_norm, ts, EFFECTIVE_START, VAL_END,
+        y_norm, hist_norm, futr_norm, ts, EFFECTIVE_START, TRAIN_END,
         raw_y=raw_y, filter_outliers=True, **ds_kw,
     )
     test_ds = HourlySettlementDataset(
-        y_norm, hist_norm, futr_norm, ts, TEST_START, EFFECTIVE_END,
+        y_norm, hist_norm, futr_norm, ts, TEST_START, TEST_END,
         **ds_kw,
     )
 
@@ -405,11 +400,11 @@ def train_one(
 
 def predict_period(paths, y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std,
                     period_start, period_end, model_kw=None,
-                    eng_feats=None, eng_ts_map=None):
+                    eng_feats=None, eng_ts_map=None, seq_y_norm=None):
     """Predict over an arbitrary date range and return (p24, a24, dates)."""
     ds = HourlySettlementDataset(
         y_norm, hist_norm, futr_norm, ts, period_start, period_end,
-        eng_feats=eng_feats, eng_ts_map=eng_ts_map,
+        eng_feats=eng_feats, eng_ts_map=eng_ts_map, seq_y_norm=seq_y_norm,
     )
     tl = DataLoader(ds, 256, shuffle=False, **_dataloader_kw())
 
@@ -450,11 +445,11 @@ def predict_period(paths, y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std
 
 
 def predict_test(paths, y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std,
-                  model_kw=None, eng_feats=None, eng_ts_map=None):
+                  model_kw=None, eng_feats=None, eng_ts_map=None, seq_y_norm=None):
     return predict_period(
         paths, y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std,
-        TEST_START, EFFECTIVE_END, model_kw=model_kw,
-        eng_feats=eng_feats, eng_ts_map=eng_ts_map,
+        TEST_START, TEST_END, model_kw=model_kw,
+        eng_feats=eng_feats, eng_ts_map=eng_ts_map, seq_y_norm=seq_y_norm,
     )
 
 
@@ -719,7 +714,7 @@ def plot_24step(p24, a24, dates, out_dir):
     ax.set_ylabel("元/MWh")
     ax.legend(fontsize=10)
     ax.grid(True, alpha=0.25)
-    ax.set_title("V16d 小时结算价预测 — 全测试集", fontsize=13, fontweight="bold")
+    ax.set_title("V16d 小时出清价预测 — 全测试集", fontsize=13, fontweight="bold")
     plt.tight_layout()
     plt.savefig(out_dir / "da_full_test.png", dpi=120, bbox_inches="tight")
     plt.close()
@@ -734,7 +729,7 @@ def plot_24step(p24, a24, dates, out_dir):
 def run_v16d(n_seeds=1, top_k=1):
     logger.info("=" * 60)
     logger.info(
-        "V16d Hourly Settlement — Start (seeds=%d, max_epochs=%d)",
+        "V16d Hourly DA clearing — Start (seeds=%d, max_epochs=%d)",
         n_seeds,
         MAX_EPOCHS,
     )
@@ -742,12 +737,12 @@ def run_v16d(n_seeds=1, top_k=1):
     _log_device_info()
 
     df = build_feature_matrix()
-    raw_y = df[TARGET_SETTLE].values.astype(np.float32)
+    raw_y = df[TARGET_DA_CLEARING].values.astype(np.float32)
     hist = df[HIST_COLS].values.T.astype(np.float32)
     futr = df[FUTR_COLS].values.T.astype(np.float32)
     ts = df.index.values
 
-    fit_mask = df.index <= VAL_END
+    fit_mask = df.index <= TRAIN_END
     y_mean = float(raw_y[fit_mask].mean())
     y_std = float(raw_y[fit_mask].std()) + 1e-8
     y_norm = ((raw_y - y_mean) / y_std).astype(np.float32)
@@ -786,7 +781,7 @@ def run_v16d(n_seeds=1, top_k=1):
     logger.info("── Predicting on training set ──")
     p24_tr, a24_tr, dates_tr = predict_period(
         paths, y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std,
-        EFFECTIVE_START, VAL_END,
+        EFFECTIVE_START, TRAIN_END,
     )
     plot_train_week(p24_tr, a24_tr, dates_tr, V16D_DIR)
 

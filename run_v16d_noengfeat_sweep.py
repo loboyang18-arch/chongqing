@@ -11,17 +11,18 @@ from src.model_v16_nhits import (
     EFFECTIVE_START,
     FUTR_COLS,
     HIST_COLS,
-    VAL_END,
+    TRAIN_END,
     build_feature_matrix,
 )
 from src.model_v16d_hourly_settlement import (
     C_POINT,
-    TARGET_SETTLE,
+    TARGET_DA_CLEARING,
+    SEQ_TARGET_COL,
     predict_period,
     predict_test,
     train_one,
 )
-from src.shape_metrics import compute_shape_report
+from price_forecast_eval import quick_shape_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,12 +55,12 @@ def _daily_metrics_from_pred(p24, a24, dates):
     return {
         "mae": float(np.mean(np.abs(af - pf))),
         "rmse": float(np.sqrt(np.mean((af - pf) ** 2))),
-        **compute_shape_report(af, pf, idx),
+        **quick_shape_report(af, pf, idx),
     }
 
 
 def main():
-    epochs = int(os.environ.get("V16D_EPOCHS", "300"))
+    epochs = int(os.environ.get("V16D_EPOCHS", "200"))
     dropout = float(os.environ.get("V16D_DROPOUT", "0.2"))
     seeds = _parse_seeds()
     configs = _preset_configs()
@@ -72,15 +73,19 @@ def main():
 
     # Build & normalize once
     df = build_feature_matrix()
-    raw_y = df[TARGET_SETTLE].values.astype(np.float32)
+    raw_y = df[TARGET_DA_CLEARING].values.astype(np.float32)
+    seq_raw = df[SEQ_TARGET_COL].values.astype(np.float32)
     hist = df[HIST_COLS].values.T.astype(np.float32)
     futr = df[FUTR_COLS].values.T.astype(np.float32)
     ts = df.index.values
 
-    fit_mask = df.index <= VAL_END
+    fit_mask = df.index <= TRAIN_END
     y_mean = float(raw_y[fit_mask].mean())
     y_std = float(raw_y[fit_mask].std()) + 1e-8
     y_norm = ((raw_y - y_mean) / y_std).astype(np.float32)
+    seq_mean = float(seq_raw[fit_mask].mean())
+    seq_std = float(seq_raw[fit_mask].std()) + 1e-8
+    seq_y_norm = ((seq_raw - seq_mean) / seq_std).astype(np.float32)
     h_mean = hist[:, fit_mask].mean(axis=1, keepdims=True)
     h_std = hist[:, fit_mask].std(axis=1, keepdims=True) + 1e-8
     hist_norm = ((hist - h_mean) / h_std).astype(np.float32)
@@ -124,15 +129,17 @@ def main():
                 bs=bs,
                 model_kw=model_kw,
                 out_dir=seed_dir,
+                seq_y_norm=seq_y_norm,
             )
             p24_te, a24_te, dates_te = predict_test(
-                [res["path"]], y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std, model_kw=model_kw
+                [res["path"]], y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std,
+                model_kw=model_kw, seq_y_norm=seq_y_norm,
             )
             mte = _daily_metrics_from_pred(p24_te, a24_te, dates_te)
 
             p24_tr, a24_tr, dates_tr = predict_period(
                 [res["path"]], y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std,
-                EFFECTIVE_START, VAL_END, model_kw=model_kw
+                EFFECTIVE_START, TRAIN_END, model_kw=model_kw, seq_y_norm=seq_y_norm,
             )
             mtr = _daily_metrics_from_pred(p24_tr, a24_tr, dates_tr)
 
@@ -150,8 +157,8 @@ def main():
                 "test_mae": mte["mae"],
                 "test_pcorr": mte["profile_corr"],
                 "test_amp_err": mte.get("amplitude_err", np.nan),
-                "test_peak_err": mte.get("peak_hour_err", np.nan),
-                "test_valley_err": mte.get("valley_hour_err", np.nan),
+                "test_peak_err": mte.get("peak_hour_error", np.nan),
+                "test_valley_err": mte.get("valley_hour_error", np.nan),
                 "ckpt": str(res["path"]),
             }
             rows.append(row)

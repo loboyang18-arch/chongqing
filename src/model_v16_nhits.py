@@ -32,8 +32,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 
-from .config import SOURCE_DIR, OUTPUT_DIR, KEY_SECTIONS
-from .shape_metrics import compute_shape_report
+from .config import SOURCE_DIR, OUTPUT_DIR, KEY_SECTIONS, FORMAT_A_WEATHER
+from .experiment.splits import (
+    EFFECTIVE_END,
+    EFFECTIVE_START,
+    TEST_END,
+    TEST_START,
+    TRAIN_END,
+    VAL_END,
+)
+from price_forecast_eval import quick_shape_report as compute_shape_report
 
 logger = logging.getLogger(__name__)
 
@@ -46,29 +54,49 @@ LOOKBACK = 672
 HORIZON = 96
 SPD = 96
 
-EFFECTIVE_START = pd.Timestamp("2025-11-01")
-EFFECTIVE_END = pd.Timestamp("2026-03-10 23:45:00")
-TRAIN_END = pd.Timestamp("2026-01-25 23:45:00")
-VAL_END = pd.Timestamp("2026-02-08 23:45:00")
-TEST_START = pd.Timestamp("2026-02-09")
-
 TARGET = "da_clearing_price"
+# 出清「价」仅放 Lag1（V18 对齐为 D-7..D-1）；功率/量仍在 Lag1。Lag2 不含 clearing_price。
 LAG1_HIST = [
-    "rt_clearing_price", "reliability_da_price",
-    "da_clearing_power", "rt_clearing_volume",
+    "da_clearing_price",
+    "rt_clearing_price",
+    "reliability_da_price",
+    "da_clearing_power",
+    "rt_clearing_volume",
 ]
+# Lag2：负荷/出力/断面/申报等慢变量；不含 settlement（易缺失）也不含出清价。
 LAG2_HIST = [
     "actual_load", "total_gen", "hydro_gen", "non_market_gen", "renewable_gen",
-    "tie_line_power", "settlement_da_price", "settlement_rt_price",
+    "tie_line_power",
     "section_flow_hongban", "section_flow_zitong", "avg_bid_price",
 ]
-FUTR_COLS = [
+_BASE_FUTR_COLS = [
     "load_forecast", "renewable_fcst", "total_gen_fcst_pm",
     "hydro_gen_fcst_pm", "hydro_gen_fcst_am", "non_market_gen_fcst_pm",
     "renewable_fcst_total_pm", "tie_line_fcst_pm",
     "maintenance_gen_count", "maintenance_grid_count",
     "minute_of_day_sin", "minute_of_day_cos", "dow_sin", "dow_cos",
 ]
+# Open-Meteo 天气（Lag0）：来自 source_data/重庆OpenMeteo天气_15min.csv，见 FORMAT_A_WEATHER
+WEATHER_FUTR_FILENAME = next(iter(FORMAT_A_WEATHER))
+WEATHER_FUTR_METRICS = list(FORMAT_A_WEATHER[WEATHER_FUTR_FILENAME]["value_cols"].keys())
+USE_WEATHER_FUTR = os.environ.get("V16_USE_WEATHER_FUTR", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+_has_weather_ods = (SOURCE_DIR / WEATHER_FUTR_FILENAME).is_file()
+if USE_WEATHER_FUTR and _has_weather_ods:
+    FUTR_COLS = _BASE_FUTR_COLS[:-4] + WEATHER_FUTR_METRICS + _BASE_FUTR_COLS[-4:]
+elif USE_WEATHER_FUTR and not _has_weather_ods:
+    logger.warning(
+        "V16_USE_WEATHER_FUTR=1 但未找到 %s，天气特征未加入；请运行 scripts/export_sql_weather_to_source_data.py",
+        WEATHER_FUTR_FILENAME,
+    )
+    FUTR_COLS = list(_BASE_FUTR_COLS)
+else:
+    FUTR_COLS = list(_BASE_FUTR_COLS)
+
+# 仅当已并入 FUTR_COLS 时才在矩阵中加载
+WEATHER_METRICS_IN_USE = [c for c in WEATHER_FUTR_METRICS if c in FUTR_COLS]
+
 HIST_COLS = LAG1_HIST + LAG2_HIST
 N_LAG1 = len(LAG1_HIST)
 N_HIST = len(HIST_COLS)
@@ -175,6 +203,21 @@ def build_feature_matrix() -> pd.DataFrame:
         h_idx = pd.date_range(s_h.index.min(), h_end, freq="15min")
         df["avg_bid_price"] = s_h.reindex(h_idx, method="ffill").reindex(idx)
         logger.info("  %-30s daily→15min", "avg_bid_price")
+
+    if WEATHER_METRICS_IN_USE:
+        wfn = WEATHER_FUTR_FILENAME
+        if not (SOURCE_DIR / wfn).is_file():
+            raise FileNotFoundError(
+                f"FUTR 含天气列但缺少 ODS 文件: {SOURCE_DIR / wfn} "
+                f"请先运行: python scripts/export_sql_weather_to_source_data.py"
+            )
+        for col in WEATHER_METRICS_IN_USE:
+            try:
+                s = _load_ts(wfn, "datetime", col, 15)
+                df[col] = s.reindex(idx)
+                logger.info("  %-30s %d vals (weather)", col, s.reindex(idx).notna().sum())
+            except Exception as e:
+                logger.error("  FAIL weather %-30s %s", col, e)
 
     mins = df.index.hour * 60 + df.index.minute
     df["minute_of_day_sin"] = np.sin(2 * np.pi * mins / 1440)
@@ -486,7 +529,7 @@ def train_one(seed, y, hist, futr, ts, hm, hs, fm, fs,
 
 def predict_ensemble(paths, y, hist, futr, ts, hm, hs, fm, fs):
     test_ds = TSDataset(y, hist, futr, ts,
-                        TEST_START, EFFECTIVE_END,
+                        TEST_START, TEST_END,
                         stride=SPD, day_aligned=True)
     if len(test_ds) == 0:
         logger.warning("No test windows!")

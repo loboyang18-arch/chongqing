@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_datetime(series: pd.Series) -> pd.Series:
-    return pd.to_datetime(series, errors="coerce")
+    # 混合格式（如「2025-01-01」与「2025-05-01 01:00:00」同列）需 mixed，否则易推断成纯日期格式而把带时间的行解析为 NaT
+    try:
+        return pd.to_datetime(series, errors="coerce", format="mixed")
+    except (TypeError, ValueError):
+        return pd.to_datetime(series, errors="coerce")
 
 
 # ── Format A: 单值长表 ──────────────────────────────────

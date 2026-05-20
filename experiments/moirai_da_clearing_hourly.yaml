@@ -1,0 +1,26 @@
+experiment_id: moirai_da_clearing_hourly
+description: Moirai 零样本日前市场出清电价（da_clearing_price，1h univariate，测试 2026-03-03～04-13）
+target: da_clearing
+dataset_version: v1.0
+splits: default
+runner:
+  command:
+  - python
+  - run_moirai_da_clearing.py
+  - --freq
+  - 1h
+  cwd: .
+  artifact_env:
+    MOIRAI_EXPERIMENT_SUBDIR: experiments/{{experiment_id}}
+post_evaluate:
+  enabled: true
+  predictions_csv: da_result.csv
+  actual_col: actual
+  pred_col: predicted
+  task_type: da
+  baseline_csv: null
+  baseline_task: da
+  baseline_variant: lag24h
+  with_scenario_tags: true
+  segment_cols: []
+  auto_baseline: lag24h

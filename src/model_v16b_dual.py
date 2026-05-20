@@ -36,7 +36,7 @@ import matplotlib.font_manager as fm
 from .config import OUTPUT_DIR
 from .model_v16_nhits import (
     build_feature_matrix,
-    EFFECTIVE_START, EFFECTIVE_END, TRAIN_END, VAL_END, TEST_START,
+    EFFECTIVE_START, EFFECTIVE_END, TRAIN_END, VAL_END, TEST_START, TEST_END,
     TARGET, HIST_COLS, FUTR_COLS, LAG1_HIST, LAG2_HIST,
     N_LAG1, N_HIST, N_FUTR, SPD,
 )
@@ -275,7 +275,7 @@ def train_one(seed, y_norm, hist_norm, futr_norm, delta_norm, ts,
 def predict_test(paths, y_norm, hist_norm, futr_norm, delta_norm, ts,
                  raw_y, y_mean, y_std):
     test_ds = PointDataset(y_norm, hist_norm, futr_norm, ts, delta_norm,
-                           TEST_START, EFFECTIVE_END)
+                           TEST_START, TEST_END)
     tl = DataLoader(test_ds, 512, shuffle=False)
 
     model_preds = []

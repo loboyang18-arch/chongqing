@@ -1,0 +1,24 @@
+experiment_id: v12_shape_opt_default
+description: V12 Shape-Opt 默认变体A（日前出清价 target_da_clearing_price）
+target: clearing_da
+dataset_version: v1.0
+splits: default
+runner:
+  command:
+  - python
+  - run_v12_shape_opt_default.py
+  cwd: .
+  artifact_env:
+    V12_SHAPE_OUT_DIR: experiments/{{experiment_id}}
+post_evaluate:
+  enabled: true
+  predictions_csv: da_result.csv
+  actual_col: actual
+  pred_col: predicted
+  task_type: da
+  baseline_csv: null
+  baseline_task: da
+  baseline_variant: lag24h
+  with_scenario_tags: true
+  segment_cols: []
+  auto_baseline: lag24h

@@ -21,12 +21,15 @@ import numpy as np
 import pandas as pd
 
 from .config import OUTPUT_DIR
+from .feature_engineering import TARGET_DA_COL
+from .experiment.splits import HOURLY_TEST_END
+from .experiment.splits import HOURLY_TEST_START as TEST_START
+from .experiment.splits import HOURLY_TRAIN_END as TRAIN_END
+
+# 与 splits 中测试窗右端一致（小时索引闭区间）
+TEST_END = HOURLY_TEST_END
 
 logger = logging.getLogger(__name__)
-
-# ── 时间划分 ──────────────────────────────────────────────
-TRAIN_END = "2026-02-08 23:00:00"
-TEST_START = "2026-02-09 00:00:00"
 
 # ── 峰谷时段（重庆电力市场） ─────────────────────────────
 PEAK_HOURS = set(range(8, 12)) | set(range(17, 21))
@@ -85,7 +88,7 @@ def _load_dataset(name: str) -> pd.DataFrame:
 
 def _time_split(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     train = df.loc[:TRAIN_END]
-    test = df.loc[TEST_START:]
+    test = df.loc[TEST_START:TEST_END]
     logger.info(
         "Train: %d rows (%s ~ %s)",
         len(train), train.index.min(), train.index.max(),
@@ -355,7 +358,7 @@ def run_single_model(
 def run_baseline() -> Dict:
     """主入口：运行 DA + RT 基线模型，合并输出评估指标。"""
     da_results, da_metrics, da_imp, da_model = run_single_model(
-        "da", "target_da_clearing_price", "da_clearing_price_lag24h",
+        "da", TARGET_DA_COL, "da_clearing_price_lag24h",
         LGB_PARAMS_DA,
     )
     rt_results, rt_metrics, rt_imp, rt_model = run_single_model(

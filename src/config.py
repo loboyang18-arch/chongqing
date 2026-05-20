@@ -182,6 +182,34 @@ FORMAT_A_SETTLEMENT = {
     },
 }
 
+# Open-Meteo 天气（15min，由 scripts/export_sql_weather_to_source_data.py 从 sql 宽表导出；
+# 列名与 sql 中一致，经筛选：排除全空/全0/全常数列如 snowfall、snow_depth）
+_FMT_A_WEATHER_COLS = [
+    "temperature_2m", "relative_humidity_2m", "dew_point_2m", "apparent_temperature",
+    "precipitation", "rain", "weather_code", "pressure_msl", "surface_pressure",
+    "cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high",
+    "shortwave_radiation", "shortwave_radiation_instant",
+    "direct_radiation", "direct_radiation_instant",
+    "direct_normal_irradiance", "direct_normal_irradiance_instant",
+    "diffuse_radiation", "diffuse_radiation_instant",
+    "terrestrial_radiation", "terrestrial_radiation_instant",
+    "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m",
+    "et0_fao_evapotranspiration", "vapour_pressure_deficit",
+    "soil_temperature_0_to_7cm", "soil_temperature_7_to_28cm",
+    "soil_temperature_28_to_100cm", "soil_temperature_100_to_255cm",
+    "soil_moisture_0_to_7cm", "soil_moisture_7_to_28cm",
+    "soil_moisture_28_to_100cm", "soil_moisture_100_to_255cm",
+]
+
+FORMAT_A_WEATHER = {
+    "重庆OpenMeteo天气_15min.csv": {
+        "date_col": "datetime",
+        "value_cols": {c: c for c in _FMT_A_WEATHER_COLS},
+        "granularity": 15,
+        "agg_hourly": "mean",
+    },
+}
+
 # ── Format B: 枢纽长表 (entity + timestamp + value) ─────
 FORMAT_B = {
     "实际运行输电断面约束情况.csv": {

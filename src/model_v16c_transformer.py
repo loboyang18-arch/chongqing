@@ -2,7 +2,7 @@
 V16c — 对齐滑动窗口 + 小规模 Transformer（仅预测电价）
 
 默认运行：单 seed、固定 MAX_EPOCHS（50）轮。
-  - 原验证集时间段并入训练（EFFECTIVE_START～VAL_END）。
+  - 训练窗 EFFECTIVE_START～TRAIN_END；epoch 监控为 TEST_START～TEST_END。
   - 每轮在 eval 下对「完整训练集」与「测试集」各算一遍按日 24h 聚合的 MAE / profile_corr
     并打印（与测试集 output 口径一致）。
   - 第 50 轮结束后保存最后一轮权重，再生成测试集曲线与 CSV。
@@ -44,7 +44,7 @@ import matplotlib.font_manager as fm
 from .config import OUTPUT_DIR
 from .model_v16_nhits import (
     build_feature_matrix,
-    EFFECTIVE_START, EFFECTIVE_END, VAL_END, TEST_START,
+    EFFECTIVE_START, EFFECTIVE_END, TRAIN_END, TEST_END, TEST_START,
     TARGET, HIST_COLS, FUTR_COLS, N_LAG1, N_HIST, N_FUTR, SPD,
 )
 from .shape_metrics import compute_shape_report
@@ -270,10 +270,10 @@ def train_one(
     _seed(seed)
 
     train_ds = AlignedSeqDataset(
-        y_norm, hist_norm, futr_norm, ts, EFFECTIVE_START, VAL_END
+        y_norm, hist_norm, futr_norm, ts, EFFECTIVE_START, TRAIN_END
     )
     test_ds = AlignedSeqDataset(
-        y_norm, hist_norm, futr_norm, ts, TEST_START, EFFECTIVE_END
+        y_norm, hist_norm, futr_norm, ts, TEST_START, TEST_END
     )
 
     tl = DataLoader(train_ds, bs, shuffle=True, drop_last=True)
@@ -364,7 +364,7 @@ def train_one(
 
 def predict_test(paths, y_norm, hist_norm, futr_norm, ts, raw_y, y_mean, y_std):
     test_ds = AlignedSeqDataset(
-        y_norm, hist_norm, futr_norm, ts, TEST_START, EFFECTIVE_END
+        y_norm, hist_norm, futr_norm, ts, TEST_START, TEST_END
     )
     tl = DataLoader(test_ds, 256, shuffle=False)
 
@@ -599,7 +599,7 @@ def run_v16c(n_seeds=1, top_k=1):
     futr = df[FUTR_COLS].values.T.astype(np.float32)
     ts = df.index.values
 
-    fit_mask = df.index <= VAL_END
+    fit_mask = df.index <= TRAIN_END
     y_mean = float(raw_y[fit_mask].mean())
     y_std = float(raw_y[fit_mask].std()) + 1e-8
     y_norm = ((raw_y - y_mean) / y_std).astype(np.float32)

@@ -14,7 +14,7 @@ import pandas as pd
 from .config import (
     SOURCE_DIR, OUTPUT_DIR,
     FORMAT_A_SINGLE, FORMAT_A_DUAL, FORMAT_A_CLEARING,
-    FORMAT_A_SETTLEMENT, FORMAT_B, FORMAT_D,
+    FORMAT_A_SETTLEMENT, FORMAT_A_WEATHER, FORMAT_B, FORMAT_D,
     KEY_SECTIONS,
 )
 
@@ -266,6 +266,26 @@ def check_all_features() -> pd.DataFrame:
 
     # ── FORMAT_A_SINGLE ──
     for fname, meta in FORMAT_A_SINGLE.items():
+        df = _load_raw_ts(fname, meta["date_col"])
+        if df.empty:
+            continue
+        gran = meta["granularity"]
+        for orig_col, std_name in meta["value_cols"].items():
+            if orig_col not in df.columns:
+                logger.warning("Column '%s' not in %s", orig_col, fname)
+                continue
+            s = pd.to_numeric(df[orig_col], errors="coerce")
+            s.name = std_name
+            role = V16_ROLES.get(std_name, "unknown")
+            row = _compute_quality(
+                s, std_name, fname, gran, 15,
+                _get_align_method(gran), role,
+            )
+            rows.append(row)
+            logger.info("Checked: %-35s (%s)", std_name, fname)
+
+    # ── FORMAT_A_WEATHER（Open-Meteo，与 FORMAT_A_SINGLE 同检查逻辑）──
+    for fname, meta in FORMAT_A_WEATHER.items():
         df = _load_raw_ts(fname, meta["date_col"])
         if df.empty:
             continue

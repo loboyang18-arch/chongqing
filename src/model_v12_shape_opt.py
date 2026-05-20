@@ -17,6 +17,7 @@ V12 Shape Optimization — V11 增强特征 + V5/V6 两阶段 Level+Shape 框架
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -25,11 +26,12 @@ import numpy as np
 import pandas as pd
 
 from .config import OUTPUT_DIR, PARAMS_DIR
+from .feature_engineering import TARGET_DA_COL
 from .model_baseline import (
     EARLY_STOPPING_ROUNDS, NUM_BOOST_ROUND, PEAK_HOURS, VALLEY_HOURS,
-    TEST_START, TRAIN_END, _compute_metrics, _load_dataset,
+    TEST_END, TEST_START, TRAIN_END, _compute_metrics, _load_dataset,
 )
-from .shape_metrics import compute_shape_report, _split_daily
+from price_forecast_eval import quick_shape_report
 
 logger = logging.getLogger(__name__)
 
@@ -110,26 +112,26 @@ def _build_day_level_features_v12(df: pd.DataFrame, target_col: str) -> pd.DataF
 
     daily["target_daily_mean"] = daily_target
 
-    daily["daily_mean_lag1"] = daily_target.shift(1)
-    daily["daily_mean_lag3_avg"] = daily_target.rolling(3, min_periods=1).mean().shift(1)
-    daily["daily_mean_lag7_avg"] = daily_target.rolling(7, min_periods=1).mean().shift(1)
-    daily["daily_mean_ema2"] = daily_target.ewm(span=2, adjust=False).mean().shift(1)
-    daily["daily_mean_ema3"] = daily_target.ewm(span=3, adjust=False).mean().shift(1)
-    daily["daily_mean_ema5"] = daily_target.ewm(span=5, adjust=False).mean().shift(1)
-    daily["daily_mean_roll14"] = daily_target.rolling(14, min_periods=5).mean().shift(1)
-    daily["daily_mean_roll14_std"] = daily_target.rolling(14, min_periods=5).std().shift(1)
-    daily["daily_mean_recent3"] = daily_target.rolling(3, min_periods=2).mean().shift(1)
-    daily["daily_mean_diff1"] = daily_target.shift(1) - daily_target.shift(2)
-    daily["daily_mean_diff3"] = daily_target.shift(1) - daily_target.shift(4)
+    daily["daily_mean_lag1"] = daily_target.shift(2)
+    daily["daily_mean_lag3_avg"] = daily_target.rolling(3, min_periods=1).mean().shift(2)
+    daily["daily_mean_lag7_avg"] = daily_target.rolling(7, min_periods=1).mean().shift(2)
+    daily["daily_mean_ema2"] = daily_target.ewm(span=2, adjust=False).mean().shift(2)
+    daily["daily_mean_ema3"] = daily_target.ewm(span=3, adjust=False).mean().shift(2)
+    daily["daily_mean_ema5"] = daily_target.ewm(span=5, adjust=False).mean().shift(2)
+    daily["daily_mean_roll14"] = daily_target.rolling(14, min_periods=5).mean().shift(2)
+    daily["daily_mean_roll14_std"] = daily_target.rolling(14, min_periods=5).std().shift(2)
+    daily["daily_mean_recent3"] = daily_target.rolling(3, min_periods=2).mean().shift(2)
+    daily["daily_mean_diff1"] = daily_target.shift(2) - daily_target.shift(3)
+    daily["daily_mean_diff3"] = daily_target.shift(2) - daily_target.shift(5)
 
     daily_amp = df.groupby("date")[target_col].apply(lambda x: x.max() - x.min())
-    daily["daily_amp_lag1"] = daily_amp.shift(1)
-    daily["daily_amp_lag3_avg"] = daily_amp.rolling(3, min_periods=1).mean().shift(1)
+    daily["daily_amp_lag1"] = daily_amp.shift(2)
+    daily["daily_amp_lag3_avg"] = daily_amp.rolling(3, min_periods=1).mean().shift(2)
 
     peak_mean = df[df.index.hour.isin(PEAK_HOURS)].groupby("date")[target_col].mean()
     valley_mean = df[df.index.hour.isin(VALLEY_HOURS)].groupby("date")[target_col].mean()
-    daily["daily_peak_mean_lag1"] = peak_mean.shift(1)
-    daily["daily_valley_mean_lag1"] = valley_mean.shift(1)
+    daily["daily_peak_mean_lag1"] = peak_mean.shift(2)
+    daily["daily_valley_mean_lag1"] = valley_mean.shift(2)
 
     diff_threshold = np.maximum(10.0, daily["daily_mean_roll14_std"].fillna(0.0) * 0.6)
     daily["regime_shift_flag"] = (
@@ -221,12 +223,13 @@ def _compute_adaptive_gamma(recent_errors, regime_flag, gamma_min, gamma_max):
 
 def _simulate_adaptive_level(actual, model_pred, ema_fast, ema_slow,
                              regime_flags, weights, gamma_min, gamma_max,
-                             initial_prev_err=0.0):
-    corrected = np.full(len(actual), np.nan)
-    gamma_trace = np.full(len(actual), np.nan)
+                             initial_prev_err=0.0, use_feedback=True):
+    n = len(model_pred)
+    corrected = np.full(n, np.nan)
+    gamma_trace = np.full(n, np.nan)
     prev_err = initial_prev_err if np.isfinite(initial_prev_err) else 0.0
     recent_errors: List[float] = []
-    for i in range(len(actual)):
+    for i in range(n):
         blended = _blend_day_level_signals(
             model_pred[i], ema_fast[i], ema_slow[i], int(regime_flags[i]), weights
         )
@@ -236,7 +239,7 @@ def _simulate_adaptive_level(actual, model_pred, ema_fast, ema_slow,
         )
         gamma_trace[i] = gamma_t
         corrected[i] = blended + gamma_t * prev_err if np.isfinite(blended) else np.nan
-        if np.isfinite(actual[i]) and np.isfinite(corrected[i]):
+        if use_feedback and np.isfinite(actual[i]) and np.isfinite(corrected[i]):
             prev_err = actual[i] - corrected[i]
             recent_errors.append(prev_err)
     return corrected, gamma_trace
@@ -296,23 +299,24 @@ def _shape_corr_arrays(actual, pred, dates):
     return np.mean(corrs) if corrs else -1.0
 
 
-def _compute_shape_sources(target_df, full_df, target_col, shape_model,
+def _compute_shape_sources(target_df, history_df, target_col, shape_model,
                            feat_cols, scale_factor):
     dates = target_df.index.date
     target_dates = sorted(set(dates))
-    all_dates = sorted(set(full_df.index.date))
+    history_dates_set = set(history_df.index.date)
+    all_dates = sorted(history_dates_set | set(target_dates))
     all_date_idx = {d: i for i, d in enumerate(all_dates)}
-    daily_mean = full_df.groupby(full_df.index.date)[target_col].mean()
+    daily_mean = history_df.groupby(history_df.index.date)[target_col].mean()
 
     hourly_dev = {}
-    for d in all_dates:
-        mask = full_df.index.date == d
-        hourly_dev[d] = full_df.loc[mask, target_col].values - daily_mean.get(d, np.nan)
+    for d in sorted(history_dates_set):
+        mask = history_df.index.date == d
+        hourly_dev[d] = history_df.loc[mask, target_col].values - daily_mean.get(d, np.nan)
 
     s1 = np.full(len(target_df), np.nan)
     for d in target_dates:
         idx = all_date_idx[d]
-        prev = [all_dates[idx - k] for k in range(1, 4) if idx - k >= 0]
+        prev = [all_dates[idx - k] for k in range(2, 5) if idx - k >= 0]
         if not prev:
             continue
         mask = dates == d
@@ -331,9 +335,9 @@ def _compute_shape_sources(target_df, full_df, target_col, shape_model,
     s3 = np.full(len(target_df), np.nan)
     for d in target_dates:
         idx = all_date_idx[d]
-        if idx == 0:
+        if idx < 2:
             continue
-        prev_d = all_dates[idx - 1]
+        prev_d = all_dates[idx - 2]
         mask = dates == d
         dev = hourly_dev.get(prev_d)
         if dev is not None and len(dev) == mask.sum():
@@ -456,7 +460,7 @@ def run_v12_variant(variant: str = "A"):
       "C" - A + S4 多路集成
     """
     name = "da"
-    target_col = "target_da_clearing_price"
+    target_col = os.environ.get("V12_TARGET_COL", TARGET_DA_COL).strip() or TARGET_DA_COL
     logger.info("=" * 60)
     logger.info("V12-%s: %s", variant, name.upper())
     logger.info("=" * 60)
@@ -471,20 +475,32 @@ def run_v12_variant(variant: str = "A"):
     df["target_hourly_dev"] = df[target_col] - daily_mean
 
     train_df = df.loc[:TRAIN_END].copy()
-    test_df = df.loc[TEST_START:].copy()
+    test_df = df.loc[TEST_START:TEST_END].copy()
     train_dates = sorted(set(train_df["date"]))
     test_dates = sorted(set(test_df["date"]))
 
+    # Hold-out from training set for LGB early stopping (avoid test leakage)
+    n_val_lgb = max(int(len(train_dates) * 0.2), 5)
+    val_lgb_dates = set(train_dates[-n_val_lgb:])
+    train_lgb_df = train_df[~train_df["date"].isin(val_lgb_dates)]
+    val_lgb_df = train_df[train_df["date"].isin(val_lgb_dates)]
+    logger.info("LGB early-stop split: train_sub=%d val_sub=%d hours",
+                len(train_lgb_df), len(val_lgb_df))
+
     # ── [A] Point LGB baseline ──────────────────────
     logger.info("--- [A] Point LGB baseline ---")
-    dtrain = lgb.Dataset(train_df[feature_cols], label=train_df[target_col])
-    dval = lgb.Dataset(test_df[feature_cols], label=test_df[target_col], reference=dtrain)
-    lgb_model = lgb.train(
-        params, dtrain, num_boost_round=NUM_BOOST_ROUND,
-        valid_sets=[dtrain, dval], valid_names=["train", "val"],
+    dt_probe = lgb.Dataset(train_lgb_df[feature_cols], label=train_lgb_df[target_col])
+    dv_probe = lgb.Dataset(val_lgb_df[feature_cols], label=val_lgb_df[target_col], reference=dt_probe)
+    lgb_probe = lgb.train(
+        params, dt_probe, num_boost_round=NUM_BOOST_ROUND,
+        valid_sets=[dt_probe, dv_probe], valid_names=["train", "val"],
         callbacks=[lgb.early_stopping(EARLY_STOPPING_ROUNDS, verbose=True),
                    lgb.log_evaluation(200)],
     )
+    best_iter_point = lgb_probe.best_iteration
+    logger.info("  Point LGB best_iteration (holdout): %d", best_iter_point)
+    dtrain_full = lgb.Dataset(train_df[feature_cols], label=train_df[target_col])
+    lgb_model = lgb.train(params, dtrain_full, num_boost_round=best_iter_point)
     pred_lgb = lgb_model.predict(test_df[feature_cols])
 
     # ── [B] Adaptive Day-Level ──────────────────────
@@ -534,7 +550,8 @@ def run_v12_variant(variant: str = "A"):
     test_regime = _compute_regime_flag(daily.loc[test_dates]).values
     level_corrected_test, gamma_trace = _simulate_adaptive_level(
         actual_daily_test, test_model, test_fast, test_slow,
-        test_regime, best_weights, gamma_min, gamma_max, initial_prev_err=prev_err
+        test_regime, best_weights, gamma_min, gamma_max,
+        initial_prev_err=prev_err, use_feedback=False,
     )
     level_map = dict(zip(test_dates, level_corrected_test))
     level_per_hour = np.array([level_map.get(d, np.nan) for d in test_df["date"]])
@@ -547,25 +564,36 @@ def run_v12_variant(variant: str = "A"):
         logger.info("  Using shape-aware custom objective")
         params_shape["objective"] = _shape_aware_huber_obj
         params_shape.pop("metric", None)
-        ds_t = lgb.Dataset(train_df[feature_cols], label=train_df["target_hourly_dev"])
-        ds_v = lgb.Dataset(test_df[feature_cols], label=test_df["target_hourly_dev"], reference=ds_t)
-        shape_model = lgb.train(
-            params_shape, ds_t, num_boost_round=NUM_BOOST_ROUND,
+        ds_tp = lgb.Dataset(train_lgb_df[feature_cols], label=train_lgb_df["target_hourly_dev"])
+        ds_vp = lgb.Dataset(val_lgb_df[feature_cols], label=val_lgb_df["target_hourly_dev"], reference=ds_tp)
+        shape_probe = lgb.train(
+            params_shape, ds_tp, num_boost_round=NUM_BOOST_ROUND,
             feval=_shape_aware_mae_eval,
-            valid_sets=[ds_t, ds_v], valid_names=["train", "val"],
+            valid_sets=[ds_tp, ds_vp], valid_names=["train", "val"],
             callbacks=[lgb.early_stopping(EARLY_STOPPING_ROUNDS, verbose=False),
                        lgb.log_evaluation(200)],
+        )
+        best_iter_shape = shape_probe.best_iteration
+        logger.info("  Shape LGB best_iteration (holdout): %d", best_iter_shape)
+        ds_t_full = lgb.Dataset(train_df[feature_cols], label=train_df["target_hourly_dev"])
+        shape_model = lgb.train(
+            params_shape, ds_t_full, num_boost_round=best_iter_shape,
+            feval=_shape_aware_mae_eval,
         )
     else:
         params_shape["objective"] = "huber"
-        ds_t = lgb.Dataset(train_df[feature_cols], label=train_df["target_hourly_dev"])
-        ds_v = lgb.Dataset(test_df[feature_cols], label=test_df["target_hourly_dev"], reference=ds_t)
-        shape_model = lgb.train(
-            params_shape, ds_t, num_boost_round=NUM_BOOST_ROUND,
-            valid_sets=[ds_t, ds_v], valid_names=["train", "val"],
+        ds_tp = lgb.Dataset(train_lgb_df[feature_cols], label=train_lgb_df["target_hourly_dev"])
+        ds_vp = lgb.Dataset(val_lgb_df[feature_cols], label=val_lgb_df["target_hourly_dev"], reference=ds_tp)
+        shape_probe = lgb.train(
+            params_shape, ds_tp, num_boost_round=NUM_BOOST_ROUND,
+            valid_sets=[ds_tp, ds_vp], valid_names=["train", "val"],
             callbacks=[lgb.early_stopping(EARLY_STOPPING_ROUNDS, verbose=False),
                        lgb.log_evaluation(200)],
         )
+        best_iter_shape = shape_probe.best_iteration
+        logger.info("  Shape LGB best_iteration (holdout): %d", best_iter_shape)
+        ds_t_full = lgb.Dataset(train_df[feature_cols], label=train_df["target_hourly_dev"])
+        shape_model = lgb.train(params_shape, ds_t_full, num_boost_round=best_iter_shape)
 
     shape_pred_train = shape_model.predict(train_df[feature_cols])
     actual_dev_std = train_df["target_hourly_dev"].std()
@@ -573,9 +601,8 @@ def run_v12_variant(variant: str = "A"):
     scale_factor = min(actual_dev_std / max(pred_dev_std, 1e-6), 5.0)
     logger.info("  Shape scale_factor: %.3f", scale_factor)
 
-    full_df = pd.concat([train_df, test_df])
     s1_test, s2_test, s3_test = _compute_shape_sources(
-        test_df, full_df, target_col, shape_model, feature_cols, scale_factor
+        test_df, train_df, target_col, shape_model, feature_cols, scale_factor
     )
 
     # S4: V11 逐点 LGB 去均值
@@ -627,7 +654,7 @@ def run_v12_variant(variant: str = "A"):
     s2_val_oof = shape_oof.predict(val_df[feature_cols]) * oof_scale
 
     s1_train, _, s3_train = _compute_shape_sources(
-        train_df, full_df, target_col, shape_model, feature_cols, scale_factor
+        train_df, train_df, target_col, shape_model, feature_cols, scale_factor
     )
     train_level_map = dict(zip(train_dates, train_level_corr))
     train_level_h = np.array([train_level_map.get(d, np.nan) for d in train_df["date"]])
@@ -739,7 +766,7 @@ def run_v12_variant(variant: str = "A"):
 
     mae = float(np.mean(np.abs(actual_test - pred_v12)))
     rmse = float(np.sqrt(np.mean((actual_test - pred_v12) ** 2)))
-    shape_report = compute_shape_report(actual_test, pred_v12, test_df.index, include_v7=True)
+    shape_report = quick_shape_report(actual_test, pred_v12, test_df.index, include_extended=True)
     diag = _daily_diagnostics(actual_test, pred_v12, test_df.index)
     neg_ratio = float(diag["neg_corr_flag"].mean())
 

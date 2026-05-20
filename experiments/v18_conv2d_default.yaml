@@ -1,0 +1,23 @@
+experiment_id: "v18_conv2d_default"
+description: "V18 Conv2D 逐小时预测（日前出清电价 da_clearing_price，借鉴内蒙 V6 2D 网格思想）"
+target: "da_clearing"
+dataset_version: "v1.0"
+splits: "default"
+
+runner:
+  command: ["python", "run_v18_conv2d.py"]
+  cwd: "."
+  artifact_env:
+    V18_OUT_DIR: "experiments/{{experiment_id}}"
+
+post_evaluate:
+  enabled: true
+  predictions_csv: "da_result.csv"
+  actual_col: "actual"
+  pred_col: "predicted"
+  task_type: "da"
+  baseline_csv: null
+  baseline_task: "da"
+  baseline_variant: "lag48h"
+  with_scenario_tags: true
+  segment_cols: []

@@ -1,0 +1,44 @@
+---
+description: 所有命令与 Python 操作必须在 power conda 环境中执行
+alwaysApply: true
+---
+
+# Power Conda 环境
+
+本工程的所有终端命令、Python 脚本、pip 安装、训练与评估，**必须在 `power` conda 环境中执行**，不要使用 `base` 或系统默认 Python。
+
+## 环境路径
+
+- 解释器：`/root/miniconda3/envs/power/bin/python`
+- 激活：`conda activate power`
+
+## 执行约定
+
+1. **运行脚本前**先激活环境，或使用绝对路径解释器。
+2. **安装依赖**只在 `power` 中执行，例如：
+   ```bash
+   conda activate power
+   pip install -r requirements-moirai.txt
+   ```
+3. **子进程 / 后台任务**同样使用 `power` 的 Python，避免混用 `base`。
+4. 若需确认环境，运行：
+   ```bash
+   which python
+   # 应为 /root/miniconda3/envs/power/bin/python
+   ```
+
+## 示例
+
+```bash
+# ✅ 推荐
+conda activate power
+cd /root/workspace/chongqing_prj
+python run_moirai_da_clearing.py --freq 1h
+
+# ✅ 不激活时显式指定
+/root/miniconda3/envs/power/bin/python run_moirai_da_clearing.py --freq 1h
+
+# ❌ 避免
+python run_moirai_da_clearing.py   # 若当前为 base
+/root/miniconda3/bin/pip install ... # base 环境
+```

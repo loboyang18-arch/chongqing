@@ -1,4 +1,4 @@
-"""V17 Day-level Transformer: one-day sample -> 24 hourly settlement prices."""
+"""V17 Day-level Transformer: one-day sample -> 24 hourly settlement_da_price (日前结算价)."""
 import logging
 import os
 from dataclasses import dataclass
@@ -14,14 +14,15 @@ from src.config import OUTPUT_DIR
 from src.model_v16_nhits import (
     EFFECTIVE_END,
     EFFECTIVE_START,
+    TEST_END,
     TEST_START,
-    VAL_END,
+    TRAIN_END,
     FUTR_COLS,
     HIST_COLS,
     build_feature_matrix,
 )
-from src.model_v16d_hourly_settlement import plot_24step, plot_hourly_typical, plot_train_week
-from src.shape_metrics import compute_shape_report
+from price_forecast_eval import quick_shape_report
+from price_forecast_eval.viz import run_standard_visualization
 
 logging.basicConfig(
     level=logging.INFO,
@@ -181,7 +182,7 @@ def _daily_metrics(p24, a24, dates):
     )
     af = a24.reshape(-1)
     pf = p24.reshape(-1)
-    shape = compute_shape_report(af, pf, idx)
+    shape = quick_shape_report(af, pf, idx)
     return {
         "mae": float(np.mean(np.abs(af - pf))),
         "rmse": float(np.sqrt(np.mean((af - pf) ** 2))),
@@ -204,26 +205,32 @@ def main():
     # 15-min -> hourly grid (minute==0)
     df15 = build_feature_matrix()
     dfh = df15[df15.index.minute == 0].copy()
-    target_col = "settlement_da_price"
 
-    # Keep only columns with full hour-level meaning for day-level modeling
-    past_cols = [target_col] + HIST_COLS + FUTR_COLS
+    label_col = "settlement_da_price"
+    past_target_col = "da_clearing_price"
+
+    raw_target = dfh[label_col].copy()
+
+    # settlement 价格 D+1 公布，past window 中最近只能用 D-2 数据，shift 24h
+    for _sc in ["settlement_da_price", "settlement_rt_price"]:
+        if _sc in dfh.columns:
+            dfh[_sc] = dfh[_sc].shift(24)
+
+    # past_cols 中用 da_clearing_price 作为价格历史通道（D-1 可用，无泄漏）
+    past_cols = [past_target_col] + HIST_COLS + FUTR_COLS
     past_cols = [c for c in past_cols if c in dfh.columns]
     futr_cols = [c for c in FUTR_COLS if c in dfh.columns]
-    # 去重（保序），避免重复列导致 DataFrame 赋值长度不一致
     past_cols = list(dict.fromkeys(past_cols))
     futr_cols = list(dict.fromkeys(futr_cols))
 
     train_start = pd.Timestamp(EFFECTIVE_START).floor("D")
-    train_end = pd.Timestamp(VAL_END).floor("D")
+    train_end = pd.Timestamp(TRAIN_END).floor("D")
     test_start = pd.Timestamp(TEST_START).floor("D")
-    test_end = pd.Timestamp(EFFECTIVE_END).floor("D")
+    test_end = pd.Timestamp(TEST_END).floor("D")
 
-    fit_mask = dfh.index <= pd.Timestamp(VAL_END)
-    y_mean = float(dfh.loc[fit_mask, target_col].mean())
-    y_std = float(dfh.loc[fit_mask, target_col].std()) + 1e-8
-
-    raw_target = dfh[target_col].copy()
+    fit_mask = dfh.index <= pd.Timestamp(TRAIN_END)
+    y_mean = float(raw_target.loc[fit_mask].mean())
+    y_std = float(raw_target.loc[fit_mask].std()) + 1e-8
 
     # Per-channel normalization (features only; labels keep raw_target then normalize once in Dataset)
     pm = dfh.loc[fit_mask, past_cols].mean()
@@ -241,21 +248,19 @@ def main():
     past_hours = cfg.past_days * 24
 
     train_ds = Day24Dataset(
-        dfh, raw_target, train_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        dfh, raw_target, train_days, past_hours, label_col, past_cols, futr_cols, y_mean, y_std,
         anchor_stride_h=cfg.train_anchor_stride_h,
     )
-    # 训练监控集：测试期也按训练起点密度看趋势
     test_ds = Day24Dataset(
-        dfh, raw_target, test_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        dfh, raw_target, test_days, past_hours, label_col, past_cols, futr_cols, y_mean, y_std,
         anchor_stride_h=cfg.train_anchor_stride_h,
     )
-    # 最终评估与出图：默认每天00:00起点（可对齐原有日报告）
     train_eval_ds = Day24Dataset(
-        dfh, raw_target, train_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        dfh, raw_target, train_days, past_hours, label_col, past_cols, futr_cols, y_mean, y_std,
         anchor_stride_h=cfg.eval_anchor_stride_h,
     )
     test_eval_ds = Day24Dataset(
-        dfh, raw_target, test_days, past_hours, target_col, past_cols, futr_cols, y_mean, y_std,
+        dfh, raw_target, test_days, past_hours, label_col, past_cols, futr_cols, y_mean, y_std,
         anchor_stride_h=cfg.eval_anchor_stride_h,
     )
 
@@ -317,22 +322,37 @@ def main():
     logger.info("Saved: %s", out_dir / "seed0.pt")
 
     # Final outputs/plots
-    p24_tr, a24_tr, dates_tr = _to_day_arrays(model, train_eval_ds, y_mean, y_std)
     p24_te, a24_te, dates_te = _to_day_arrays(model, test_eval_ds, y_mean, y_std)
-    plot_train_week(p24_tr, a24_tr, dates_tr, out_dir)
-    plot_hourly_typical(p24_te, a24_te, dates_te, out_dir)
-    res = plot_24step(p24_te, a24_te, dates_te, out_dir)
+    rows = []
+    for i, d in enumerate(dates_te):
+        for h in range(24):
+            rows.append(
+                {
+                    "ts": pd.Timestamp(d) + pd.Timedelta(hours=h),
+                    "actual": a24_te[i, h],
+                    "predicted": p24_te[i, h],
+                }
+            )
+    res = pd.DataFrame(rows).set_index("ts").sort_index()
     res.to_csv(out_dir / "da_result.csv")
+    run_standard_visualization(
+        out_dir / "da_result.csv",
+        out_dir=out_dir / "plots",
+        label="V17",
+        actual_col="actual",
+        pred_col="predicted",
+        mode="appendix",
+        weekly=True,
+    )
 
     af = res["actual"].values
     pf = res["predicted"].values
-    summary = {
-        "mae": float(np.mean(np.abs(af - pf))),
-        "rmse": float(np.sqrt(np.mean((af - pf) ** 2))),
-        **compute_shape_report(af, pf, res.index),
-    }
-    pd.Series(summary).to_csv(out_dir / "metrics_summary.csv")
-    logger.info("Summary: %s", summary)
+    mae = float(np.mean(np.abs(af - pf)))
+    rmse = float(np.sqrt(np.mean((af - pf) ** 2)))
+    shape = quick_shape_report(af, pf, res.index)
+    logger.info("MAE=%.2f RMSE=%.2f", mae, rmse)
+    for k, v in shape.items():
+        logger.info("  %-18s %.4f", k, v)
 
 
 if __name__ == "__main__":

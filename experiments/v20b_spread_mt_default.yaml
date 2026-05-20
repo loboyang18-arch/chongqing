@@ -1,0 +1,13 @@
+experiment_id: v20b_spread_mt_default
+description: "V20b Conv2D spread regression + focal sign head (RT-DA)"
+
+runner:
+  command: "python run_v20b_spread_mt.py"
+  artifact_env: V20B_OUT_DIR
+
+post_evaluate:
+  result_csv: rt_result.csv
+  task_type: rt
+  with_scenario_tags: true
+  actual_col: actual
+  pred_col: predicted

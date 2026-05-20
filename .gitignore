@@ -1,5 +1,6 @@
 # Python
 __pycache__/
+.pytest_cache/
 *.py[cod]
 *.egg-info/
 .eggs/
@@ -18,8 +19,14 @@ venv/
 # 训练与中间产物（output 内规则见 output/.gitignore）
 *.parquet
 
+# run_experiment 标准实验包（config_resolved、metrics、预测副本）
+outputs/
+
 # 原始数据体积大，不入库；服务器上用 tar 包或 OSS 同步
 source_data/
+
+# 远端 SQL 拉取的宽表
+sql_data/
 
 # 本地数据打包产物
 chongqing_v16d_data.tar.gz

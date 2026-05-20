@@ -1,0 +1,13 @@
+experiment_id: v19_multitask_default
+description: "V19 Conv2D Multi-Task（日前任务默认与 V18 一致：da_clearing_price + 方向头）"
+
+runner:
+  command: "python run_v19_multitask.py"
+  artifact_env: V19_OUT_DIR
+
+post_evaluate:
+  result_csv: da_result.csv
+  task_type: da
+  with_scenario_tags: true
+  actual_col: actual
+  pred_col: predicted

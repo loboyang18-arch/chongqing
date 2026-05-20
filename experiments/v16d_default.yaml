@@ -1,0 +1,23 @@
+experiment_id: "v16d_default"
+description: "V16d 无工程特征可扩展训练（日前结算价 settlement_da_price）"
+target: "settlement_da"
+dataset_version: "v1.0"
+splits: "default"
+
+runner:
+  command: ["python", "run_v16d_scale_noengfeat.py"]
+  cwd: "."
+  artifact_env:
+    V16D_OUT_DIR: "experiments/{{experiment_id}}"
+
+post_evaluate:
+  enabled: true
+  predictions_csv: "da_result.csv"
+  actual_col: "actual"
+  pred_col: "predicted"
+  task_type: "da"
+  baseline_csv: null
+  baseline_task: "da"
+  baseline_variant: "lag48h"
+  with_scenario_tags: true
+  segment_cols: []

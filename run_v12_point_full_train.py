@@ -16,16 +16,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from src.config import OUTPUT_DIR, PARAMS_DIR
-from src.model_baseline import NUM_BOOST_ROUND, TEST_START, TRAIN_END, _load_dataset
-from src.shape_metrics import compute_shape_report
+from price_forecast_eval import quick_shape_report
+from price_forecast_eval.viz import run_standard_visualization
+from src.model_baseline import (
+    NUM_BOOST_ROUND,
+    TEST_END,
+    TEST_START,
+    TRAIN_END,
+    _load_dataset,
+)
 
 # 默认与 model_baseline.NUM_BOOST_ROUND 一致；可环境变量覆盖，例如 V12_POINT_ROUNDS=10000
 NUM_ROUNDS = int(os.environ.get("V12_POINT_ROUNDS", str(NUM_BOOST_ROUND)))
 LOG_EVERY = int(os.environ.get("V12_POINT_LOG_EVERY", "500"))
 
-# 按轮数分子目录，方便拉长训练后对比（如 r3000 / r10000 / r20000）
-OUT_DIR = OUTPUT_DIR / "v12_point_full_train" / f"r{NUM_ROUNDS}"
+# 按轮数分子目录；可选 V12_EXPERIMENT_SUBDIR=experiments/<exp_id> 供 run_experiment 统一产物
+_v12_sub = os.environ.get("V12_EXPERIMENT_SUBDIR", "").strip()
+if _v12_sub:
+    OUT_DIR = OUTPUT_DIR / _v12_sub / f"r{NUM_ROUNDS}"
+else:
+    OUT_DIR = OUTPUT_DIR / "v12_point_full_train" / f"r{NUM_ROUNDS}"
+PLOTS_DIR = OUT_DIR / "plots"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_tuned_params(name: str) -> dict:
@@ -35,7 +48,8 @@ def _load_tuned_params(name: str) -> dict:
 
 def main() -> None:
     name = "da"
-    target_col = "target_da_clearing_price"
+    from src.feature_engineering import TARGET_DA_COL
+    target_col = TARGET_DA_COL
     logger.info("=" * 60)
     logger.info("V12 Point LGB — full train (no early stopping)")
     logger.info("  num_boost_round=%d  log_every=%d", NUM_ROUNDS, LOG_EVERY)
@@ -46,7 +60,7 @@ def main() -> None:
     feature_cols = [c for c in df.columns if c != target_col]
 
     train_df = df.loc[:TRAIN_END].copy()
-    test_df = df.loc[TEST_START:].copy()
+    test_df = df.loc[TEST_START:TEST_END].copy()
 
     dtrain = lgb.Dataset(train_df[feature_cols], label=train_df[target_col])
     dval = lgb.Dataset(test_df[feature_cols], label=test_df[target_col], reference=dtrain)
@@ -77,7 +91,7 @@ def main() -> None:
     ]:
         mae = float(np.mean(np.abs(actual - pred)))
         rmse = float(np.sqrt(np.mean((actual - pred) ** 2)))
-        shape = compute_shape_report(actual, pred, idx, include_v7=False)
+        shape = quick_shape_report(actual, pred, idx, include_extended=False)
         logger.info("── %s ──", split_name.upper())
         logger.info("  MAE: %.4f  RMSE: %.4f", mae, rmse)
         for k, v in shape.items():
@@ -98,7 +112,22 @@ def main() -> None:
         {"actual": test_df[target_col], "pred": pred_test},
         index=test_df.index,
     ).to_csv(OUT_DIR / "pred_test.csv")
+    pd.DataFrame(
+        {"actual": test_df[target_col], "predicted": pred_test},
+        index=test_df.index,
+    ).to_csv(OUT_DIR / "da_result.csv")
     logger.info("Saved: pred_train.csv, pred_test.csv -> %s", OUT_DIR)
+    logger.info("Saved: da_result.csv -> %s", OUT_DIR)
+
+    run_standard_visualization(
+        OUT_DIR / "da_result.csv",
+        out_dir=PLOTS_DIR,
+        label="V12",
+        actual_col="actual",
+        pred_col="predicted",
+        mode="appendix",
+        weekly=True,
+    )
 
     # 可选：保存模型
     lgb_model.save_model(str(OUT_DIR / "point_lgb_full.txt"))

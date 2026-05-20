@@ -1,0 +1,13 @@
+experiment_id: v20c_spread_bins_default
+description: "V20c spread 3-bin (default -5/5) CE → class centers → RT"
+
+runner:
+  command: "python run_v20c_spread_bins.py"
+  artifact_env: V20C_OUT_DIR
+
+post_evaluate:
+  result_csv: rt_result.csv
+  task_type: rt
+  with_scenario_tags: true
+  actual_col: actual
+  pred_col: predicted

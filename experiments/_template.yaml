@@ -1,0 +1,34 @@
+# 复制本文件为 <experiment_id>.yaml 后修改下列字段
+experiment_id: "exp_template"
+description: "一句话说明实验目的"
+
+# 预测任务口径：clearing_da | settlement_da（用于文档与 metrics 备注，训练脚本需一致）
+target: "clearing_da"
+
+# 数据版本（见仓库根 dataset_meta.json）
+dataset_version: "v1.0"
+
+# 时间切分：固定为 default，对应 src/experiment/splits.py
+splits: "default"
+
+# 训练命令（相对仓库根目录执行）
+runner:
+  command: ["python", "run_v16d_scale_noengfeat.py"]
+  cwd: "."
+  # 写入 output/experiments/<experiment_id>/ （与 OUTPUT_DIR 组合）
+  artifact_env:
+    V16D_OUT_DIR: "experiments/{{experiment_id}}"
+
+# 训练结束后是否对预测结果跑标准评估（需存在 da_result.csv）
+post_evaluate:
+  enabled: true
+  predictions_csv: "da_result.csv"
+  actual_col: "actual"
+  pred_col: "predicted"
+  task_type: "da"
+  # clearing_da 任务请设为 null，勿与 naive settlement 基线混比
+  baseline_csv: "output/naive_settlement_baselines/summary.csv"
+  baseline_task: "da"
+  baseline_variant: "lag24h"
+  with_scenario_tags: false
+  segment_cols: []

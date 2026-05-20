@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "description": "数据产物版本指针（与 source_data + pipeline 对齐；更新时请 bump version 并备注）",
+  "dataset_version": "v1.0",
+  "paths": {
+    "source_data_dir": "source_data",
+    "hourly_features": "output/dws_hourly_features.csv",
+    "feature_da": "output/feature_da.csv",
+    "feature_rt": "output/feature_rt.csv"
+  },
+  "splits_module": "src/experiment/splits.py",
+  "pipeline_entrypoints": [
+    "src/pipeline.py",
+    "src/feature_engineering.py"
+  ],
+  "notes": "运行前请确认已生成 output/dws_hourly_features.csv 与 feature_*.csv；切分仅来自 src.experiment.splits。"
+}

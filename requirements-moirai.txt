@@ -1,0 +1,9 @@
+# Moirai 零样本日前出清价预测（model_moirai_da_clearing.py / run_moirai_da_clearing.py）
+# 安装：pip install -r requirements-moirai.txt
+# 运行前建议：export HF_ENDPOINT=https://hf-mirror.com
+
+-r requirements.txt
+
+uni2ts>=2.0
+gluonts>=0.14
+huggingface-hub>=0.20

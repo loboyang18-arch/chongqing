@@ -7,11 +7,14 @@
   - lag2：D-2日可用（实际运行值、结算价，shift 48h）
 
 产出：
-  - output/feature_da.csv — 日前电价预测训练集
+  - output/feature_da.csv — 日前出清价预测训练集
   - output/feature_rt.csv — 实时电价预测训练集
 """
 
 import logging
+
+# 日前训练集目标列（与 notebooks 一致）
+TARGET_DA_COL = "target_da_clearing_price"
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -19,16 +22,14 @@ import numpy as np
 import pandas as pd
 
 from .config import OUTPUT_DIR, SOURCE_DIR
+from .experiment.splits import FEATURE_ENGINEERING_END as EFFECTIVE_END
+from .experiment.splits import FEATURE_ENGINEERING_START as EFFECTIVE_START
 
 logger = logging.getLogger(__name__)
 
 # ── 峰谷时段定义（重庆电力市场） ──────────────────────────
 PEAK_HOURS = set(range(8, 12)) | set(range(17, 21))
 VALLEY_HOURS = set(range(0, 8)) | {23}
-
-# ── 有效数据窗口 ─────────────────────────────────────────
-EFFECTIVE_START = "2025-11-01"
-EFFECTIVE_END = "2026-03-10 23:00:00"
 
 # ── lag0: D日可用 — 预测值 + 检修（无需 shift） ──────────
 LAG0_DIRECT = [
@@ -579,15 +580,15 @@ def _add_sub_hour_shape_features(df: pd.DataFrame, feat: pd.DataFrame) -> pd.Dat
 
 
 def build_da_dataset(df: pd.DataFrame) -> pd.DataFrame:
-    """构建日前电价预测训练数据集。"""
-    logger.info("Building DA dataset...")
+    """构建日前出清价预测训练数据集。"""
+    logger.info("Building DA dataset (target=da_clearing_price)...")
     feat = _build_common_features(df)
     feat = _add_template_shape_features(df, feat)
     feat = _add_sub_hour_shape_features(df, feat)
-    feat["target_da_clearing_price"] = df["da_clearing_price"]
+    feat[TARGET_DA_COL] = df["da_clearing_price"]
 
     feat = feat.loc[EFFECTIVE_START:EFFECTIVE_END]
-    feat = feat.dropna(subset=["target_da_clearing_price"])
+    feat = feat.dropna(subset=[TARGET_DA_COL])
 
     logger.info("DA dataset: %d rows × %d cols", len(feat), len(feat.columns))
     return feat
@@ -683,7 +684,7 @@ def run_feature_engineering(
     logger.info("=" * 60)
     logger.info("VALIDATION: leakage check & coverage report")
     logger.info("=" * 60)
-    validate_no_leakage(da, "target_da_clearing_price")
+    validate_no_leakage(da, TARGET_DA_COL)
     validate_no_leakage(rt, "target_rt_clearing_price")
     report_coverage(da, "DA")
     report_coverage(rt, "RT")

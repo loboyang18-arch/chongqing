@@ -1,0 +1,57 @@
+---
+description: 长任务期间始终保持可见进展，不让用户白等
+alwaysApply: true
+---
+
+# 不要让用户白等
+
+## 核心规则
+
+**任何工具调用 block 超过 30 秒，都必须在 UI 上有可见的文字反馈。**
+
+`AwaitShell` 在 block 期间不会向 UI 输出任何字符；`Shell` 同步等待长命令也一样。从用户视角，"我在等结果" 和 "我卡死了" 完全无法区分。
+
+## 具体做法
+
+### 1. 长任务一律放后台
+
+任何预期 > 30 秒的命令（训练、评估、长 build、grid search、长 sleep），用 `block_until_ms: 0` 立即送后台，先返回一句话告诉用户「已在后台跑，pid=X，预计 N 秒」。
+
+```
+# ❌ BAD：同步等 5 分钟，UI 全程沉默
+Shell(cmd, block_until_ms=300000)
+
+# ✅ GOOD：后台跑 + 简短确认
+Shell(cmd, block_until_ms=0)
+→ 文本回复："已后台启动，约 50s 后回来取结果"
+```
+
+### 2. 等待时分段轮询，每段都说话
+
+不要一次 `AwaitShell(block_until_ms=120000)` 干等 2 分钟。改为：等 20-30 秒 → 输出一句进展（"epoch 5 跑到了，val MAE=12x，继续等"）→ 再等 20-30 秒。
+
+```
+# ❌ BAD：一次 block 200 秒，期间用户什么都看不到
+AwaitShell(task_id=X, block_until_ms=200000)
+
+# ✅ GOOD：30 秒一段，每段读 terminal 文件汇报
+AwaitShell(task_id=X, block_until_ms=30000)
+Read(terminals/X.txt) → 报告进展
+AwaitShell(task_id=X, block_until_ms=30000)
+Read(terminals/X.txt) → 再报告
+```
+
+### 3. 启动后台命令后，立即文字确认 + 一次状态 smoke check
+
+后台启动 ≠ 真在跑。启动后立即 `sleep 5 && ps + nvidia-smi`（或读 terminal 文件）确认进程活着，然后一句话告知用户："pid=X，GPU 32%，确实在跑"。
+
+### 4. 中断/卡住的两种区分
+
+- 工具返回 `interrupted by the user` → 是 Cursor 端 cancel，不是我代码的问题。明确告知用户「上一个调用被中断，重新发起」，不要默不作声。
+- 长时间没动静 → 见上面三条，根本上不要进入这种状态。
+
+## 反例（最近一次失误）
+
+后台启动训练后，连续两次 `AwaitShell(block_until_ms=90000)`，期间不输出任何文字。用户等了 200+ 秒，UI 完全沉默，无法区分"在等"还是"死了"，只能 interrupt。
+
+正确做法应该是：启动后立即报告 → 30s 后取一次 terminal 状态汇报 → 再 30s 取一次 → 完成后给最终结果。

@@ -1,0 +1,23 @@
+experiment_id: "v17_default"
+description: "V17 Day24 Transformer（日前结算价 settlement_da_price）"
+target: "settlement_da"
+dataset_version: "v1.0"
+splits: "default"
+
+runner:
+  command: ["python", "run_v17_day24_transformer.py"]
+  cwd: "."
+  artifact_env:
+    V17_OUT_DIR: "experiments/{{experiment_id}}"
+
+post_evaluate:
+  enabled: true
+  predictions_csv: "da_result.csv"
+  actual_col: "actual"
+  pred_col: "predicted"
+  task_type: "da"
+  baseline_csv: null
+  baseline_task: "da"
+  baseline_variant: "lag48h"
+  with_scenario_tags: true
+  segment_cols: []
